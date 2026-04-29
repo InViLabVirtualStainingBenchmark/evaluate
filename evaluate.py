@@ -402,7 +402,7 @@ def compute_cellpose_metrics(
     from cellpose import models as cellpose_models  # noqa: PLC0415 — lazy optional import
 
     use_gpu = device == "cuda"
-    cp_model = cellpose_models.Cellpose(gpu=use_gpu, model_type=model_type)
+    cp_model = cellpose_models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
     _log.info("Running Cellpose (%s) on %d pairs (device=%s).", model_type, len(pairs), device)
 
     results: dict[str, list[float]] = {
@@ -414,8 +414,8 @@ def compute_cellpose_metrics(
         try:
             pred_img = np.array(Image.open(pred_path).convert("RGB"))
             gt_img = np.array(Image.open(gt_path).convert("RGB"))
-            pred_masks, _, _, _ = cp_model.eval(pred_img, diameter=None, channels=[0, 0])
-            gt_masks, _, _, _ = cp_model.eval(gt_img, diameter=None, channels=[0, 0])
+            pred_masks = cp_model.eval(pred_img, diameter=None, channels=[0, 0])[0]
+            gt_masks = cp_model.eval(gt_img, diameter=None, channels=[0, 0])[0]
         except Exception as exc:  # noqa: BLE001
             _log.warning("Cellpose skipping pair (%s, %s): %s", pred_path, gt_path, exc)
             continue
