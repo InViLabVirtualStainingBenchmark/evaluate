@@ -314,3 +314,57 @@ Every run logs:
   to match using bilinear interpolation and a warning is logged.
 
 ---
+
+## Training curve visualisation
+
+`plot_training_curves.py` parses SLURM `.out` log files (or `loss_log.txt` files) and
+produces a per-model training curve plot and a summary CSV of final-epoch loss averages.
+
+Run it after training completes, before or alongside `evaluate.py`:
+
+```bash
+python plot_training_curves.py \
+    --logs path/to/run_BCI.out path/to/run_MIST.out \
+    --labels BCI MIST-HER2 \
+    --name <ModelName> \
+    --out-dir results/<ModelName>
+```
+
+Outputs written to `--out-dir`:
+
+- `<name>_training_curves.png` — loss, LR, and wall-clock timing panels
+- `<name>_training_summary.csv` — final-epoch averages per run; append these
+  columns to the main benchmark table for reporting
+
+Works with any model whose training script inherits the junyanz logger (CUT,
+pix2pix, CycleGAN, PSPStain, ASP, and similar GAN repos). Restoration models
+(SwinIR, NAFNet, etc.) may use a different log format — verify before use.
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--logs` | required | One or more `.out` or `loss_log.txt` files |
+| `--labels` | file stems | Display names matching `--logs` order |
+| `--name` | `training` | Base name for output files |
+| `--out-dir` | `.` | Output directory, created if absent |
+| `--smooth` | `5` | Moving-average window for loss curves |
+| `--last-n` | `10` | Final N epochs used for summary averages; `0` = all |
+| `--dpi` | `150` | Output image DPI |
+
+### On the cluster (VSC)
+
+Use the wrapper `run_plot_training.sh` on the **login node** — it loads the correct
+modules and activates the evaluation venv automatically:
+
+```bash
+bash run_plot_training.sh \
+    --logs path/to/run_BCI.out path/to/run_MIST.out \
+    --labels BCI MIST-HER2 \
+    --name CUT \
+    --out-dir $VSC_DATA/evaluate/results/CUT
+```
+
+No `sbatch` needed. Parsing and plotting are fast enough to run interactively.
+
+---
