@@ -52,20 +52,23 @@ Results are printed to the terminal and appended as one row to the CSV.
 
 ## Arguments
 
-| Argument | Required | Default | Description |
-|---|---|---|---|
-| `--pred` | yes | — | Folder of predicted / generated images |
-| `--gt` | yes | — | Folder of ground truth images |
-| `--model_name` | yes | — | Label for this model, used in output |
-| `--dataset_name` | yes | — | Label for the dataset used |
-| `--output` | no | None | CSV file to append results to (created if missing) |
-| `--match_by` | no | `sort` | How to pair pred and gt images: `sort` or `stem` |
-| `--pred_suffix` | no | None | Only use pred images whose filename ends with this suffix |
-| `--device` | no | `auto` | `cuda`, `cpu`, or `auto` |
-| `--runtime` | no | None | Inference time in seconds (pass-through from job script) |
-| `--gpu_mem` | no | None | Peak GPU memory in MB (pass-through from job script) |
-| `--split_name` | no | `test` | Dataset split name, e.g. `test` or `val` |
-| `--seed` | no | `42` | Random seed for reproducibility |
+| Argument           | Required | Default    | Description                                                           |
+|--------------------|----------|------------|-----------------------------------------------------------------------|
+| `--pred`           | yes      | —          | Folder of predicted / generated images                                |
+| `--gt`             | yes      | —          | Folder of ground truth images                                         |
+| `--model_name`     | yes      | —          | Label for this model, used in output                                  |
+| `--dataset_name`   | yes      | —          | Label for the dataset used                                            |
+| `--output`         | no       | None       | CSV file to append results to (created if missing)                    |
+| `--match_by`       | no       | `sort`     | How to pair pred and gt images: `sort` or `stem`                      |
+| `--pred_suffix`    | no       | None       | Only use pred images whose filename ends with this suffix             |
+| `--device`         | no       | `auto`     | `cuda`, `cpu`, or `auto`                                              |
+| `--runtime`        | no       | None       | Inference time in seconds (pass-through from job script)              |
+| `--gpu_mem`        | no       | None       | Peak GPU memory in MB (pass-through from job script)                  |
+| `--split_name`     | no       | `test`     | Dataset split name, e.g. `test` or `val`                              |
+| `--seed`           | no       | `42`       | Random seed for reproducibility                                       |
+| `--cellpose`       | no       | off        | Enable Cellpose cell segmentation evaluation (see below)              |
+| `--cellpose_model` | no       | `cyto2`    | Cellpose model: `cyto2` (H&E), `nuclei` (DAPI), `cyto`                |
+| `--cellpose_n`     | no       | None (all) | Number of pairs to run Cellpose on; subset is seeded and reproducible |
 
 ---
 
@@ -114,33 +117,79 @@ Restormer) do not need this flag.
 ### Per-image metrics
 Computed for every matched pair. Mean and standard deviation are reported.
 
-| Metric | Better | Notes |
-|---|---|---|
-| PSNR | higher | Peak signal-to-noise ratio in dB. Sensitive to pixel-level accuracy. |
-| SSIM | higher | Structural similarity, range 0–1. |
-| MS-SSIM | higher | Multi-scale SSIM, range 0–1. |
-| LPIPS (AlexNet) | lower | Perceptual similarity using AlexNet. Best standalone perceptual metric. |
-| LPIPS (VGG) | lower | Perceptual similarity using VGG. Common in GAN training pipelines. Both are reported because the field has not converged on one standard. |
-| MAE | lower | Mean absolute pixel error. |
+| Metric          | Better | Notes                                                                                                                                     |
+|-----------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| PSNR            | higher | Peak signal-to-noise ratio in dB. Sensitive to pixel-level accuracy.                                                                      |
+| SSIM            | higher | Structural similarity, range 0–1.                                                                                                         |
+| MS-SSIM         | higher | Multi-scale SSIM, range 0–1.                                                                                                              |
+| LPIPS (AlexNet) | lower  | Perceptual similarity using AlexNet. Best standalone perceptual metric.                                                                   |
+| LPIPS (VGG)     | lower  | Perceptual similarity using VGG. Common in GAN training pipelines. Both are reported because the field has not converged on one standard. |
+| MAE             | lower  | Mean absolute pixel error.                                                                                                                |
 
 ### Distribution-level metric
 Computed once across the full pred and gt folders.
 
-| Metric | Better | Notes |
-|---|---|---|
-| FID | lower | Frechet Inception Distance. Measures how similar the overall distribution of generated images is to real images. Most meaningful for unpaired models. Requires at least 2048 images for reliable results — a warning is shown for smaller sets. |
+| Metric | Better | Notes                                                                                                                                                                                                                                           |
+|--------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| FID    | lower  | Frechet Inception Distance. Measures how similar the overall distribution of generated images is to real images. Most meaningful for unpaired models. Requires at least 2048 images for reliable results — a warning is shown for smaller sets. |
 
 ### Pass-through metrics
 Not computed by the script. Provide them from your job script if you have them.
 
-| Metric | Argument |
-|---|---|
+| Metric            | Argument    |
+|-------------------|-------------|
 | Inference runtime | `--runtime` |
-| Peak GPU memory | `--gpu_mem` |
+| Peak GPU memory   | `--gpu_mem` |
+
+### Cellpose segmentation metrics (optional)
+
+Enable with `--cellpose`. Requires `pip install cellpose`.
+
+Cellpose is run independently on each predicted image and its ground truth counterpart to
+produce instance segmentation masks (one integer label per cell, 0 = background). The masks
+are then compared using greedy IoU matching at a threshold of 0.5: a predicted cell counts
+as a true positive only if it overlaps its best-matching ground truth cell by at least 50%.
+
+This is a **downstream-task metric**: instead of asking "do the pixel values match?", it
+asks "does a cell segmentation algorithm behave the same way on the generated image as on
+the real one?" A model can score well on PSNR/SSIM but still fool a segmenter differently
+than the ground truth stain would — or vice versa.
+
+| Metric       | Better | Notes                                                   |
+|--------------|--------|---------------------------------------------------------|
+| CP Precision | higher | Fraction of detected cells in pred that match a GT cell |
+| CP Recall    | higher | Fraction of GT cells that are matched by a pred cell    |
+| CP F1        | higher | Harmonic mean of precision and recall                   |
+
+**Choosing a model** — pass the model name that matches your staining type:
+
+| Staining                | `--cellpose_model` |
+|-------------------------|--------------------|
+| H&E (cytoplasm)         | `cyto2` (default)  |
+| DAPI / Hoechst (nuclei) | `nuclei`           |
+| Generic cytoplasm       | `cyto`             |
+
+**Sampling** — on large datasets Cellpose can be slow. Use `--cellpose_n N` to run on a
+random subset of N pairs instead of all pairs. The subset is drawn using Python's `random`
+module after the global `--seed` has been set, so the same seed always produces the same
+subset. The exact count is written to the CSV under `cellpose_n_pairs`.
+
+```bash
+python evaluate.py \
+  --pred results/my_model/images \
+  --gt datasets/test \
+  --model_name my_model \
+  --dataset_name my_dataset \
+  --cellpose \
+  --cellpose_model nuclei \
+  --cellpose_n 200
+```
 
 ---
 
 ## Terminal output
+
+Without `--cellpose`:
 
 ```
 ============================================================
@@ -174,6 +223,27 @@ Not computed by the script. Provide them from your job script if you have them.
 ============================================================
 ```
 
+With `--cellpose --cellpose_model cyto2 --cellpose_n 200`:
+
+```
+============================================================
+  ...same header and metrics table...
+============================================================
+  Cellpose (cyto2) -- 200 pairs sampled
+  Metric            Mean        Std
+  --------------    --------    --------
+  CP Precision      0.823       0.041
+  CP Recall         0.791       0.053
+  CP F1             0.807       0.047
+============================================================
+  Library versions
+  --------------
+  torch             2.1.0
+  ...
+  cellpose          3.0.10
+============================================================
+```
+
 ---
 
 ## CSV output
@@ -195,8 +265,16 @@ runtime_s, gpu_mem_mb,
 seed,
 gt_checksum_md5,
 torch_version, torchmetrics_version, lpips_version,
-torch_fidelity_version, numpy_version, pillow_version
+torch_fidelity_version, numpy_version, pillow_version,
+cellpose_model, cellpose_n_pairs,
+cellpose_precision_mean, cellpose_precision_std,
+cellpose_recall_mean, cellpose_recall_std,
+cellpose_f1_mean, cellpose_f1_std,
+cellpose_version
 ```
+
+Runs without `--cellpose` write `N/A` for all `cellpose_*` columns. This means you can
+freely mix Cellpose and non-Cellpose runs in the same CSV and the file stays valid.
 
 ---
 
