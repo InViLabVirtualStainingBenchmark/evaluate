@@ -185,6 +185,21 @@ python evaluate.py \
   --cellpose_n 200
 ```
 
+**Cluster / HPC usage** — compute nodes typically have no internet access. Cellpose
+downloads model weights from HuggingFace on first use and caches them in
+`~/.cellpose/models/`. Pre-download on the login node before submitting any eval job:
+
+```bash
+python -c "
+from cellpose import models
+models.CellposeModel(pretrained_model='cyto2')   # default
+# models.CellposeModel(pretrained_model='nuclei') # add if using --cellpose_model nuclei
+"
+```
+
+This is already handled by `install_eval.sh` (pre-downloads `cyto2`). If you switch to
+a different model type, add the corresponding line there and re-run the installation job.
+
 ---
 
 ## Terminal output
