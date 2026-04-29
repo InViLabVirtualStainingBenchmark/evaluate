@@ -2,8 +2,10 @@
 Benchmark evaluation script for virtual staining histopathology image-to-image models.
 
 Computes PSNR, SSIM, MS-SSIM, LPIPS, MAE, and FID between a folder of predicted images
-and a folder of ground truth images. Logs library versions and a GT folder checksum for
-full reproducibility. Appends results to a CSV file if --output is provided.
+and a folder of ground truth images. Optionally runs Cellpose segmentation on both folders
+to compute downstream cell-detection precision, recall, and F1 (enable with --cellpose).
+Logs library versions and a GT folder checksum for full reproducibility. Appends results
+to a CSV file if --output is provided.
 """
 
 from __future__ import annotations
@@ -131,6 +133,26 @@ def parse_args() -> argparse.Namespace:
             "for pytorch-CycleGAN-and-pix2pix results folders)."
         ),
     )
+    parser.add_argument(
+        "--cellpose", action="store_true", default=False,
+        help="Enable Cellpose cell segmentation evaluation (opt-in; requires cellpose installed).",
+    )
+    parser.add_argument(
+        "--cellpose_model", type=str, default="cyto2",
+        help=(
+            "Cellpose model type to use when --cellpose is set. "
+            "Common options: 'cyto2' (H&E / cytoplasm), 'nuclei' (DAPI / nuclear), 'cyto'. "
+            "Default: cyto2."
+        ),
+    )
+    parser.add_argument(
+        "--cellpose_n", type=int, default=None,
+        help=(
+            "Number of image pairs to run Cellpose on. "
+            "If not set, all pairs are evaluated. "
+            "The subset is drawn with the global --seed, so results are fully reproducible."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -143,12 +165,14 @@ def set_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def get_library_versions() -> dict[str, str]:
+def get_library_versions(cellpose_enabled: bool = False) -> dict[str, str]:
     """Collect runtime version strings for all metric libraries via importlib.metadata."""
     lib_names = [
         "torch", "torchmetrics", "lpips", "torch-fidelity",
         "numpy", "Pillow",
     ]
+    if cellpose_enabled:
+        lib_names.append("cellpose")
     versions: dict[str, str] = {}
     for lib in lib_names:
         try:
@@ -320,6 +344,92 @@ def compute_fid(pred_folder: str, gt_folder: str) -> float:
     return float(metrics["frechet_inception_distance"])
 
 
+def _compare_instance_masks(
+    pred_mask: np.ndarray, gt_mask: np.ndarray, iou_threshold: float = 0.5
+) -> tuple[float, float, float]:
+    """Return (precision, recall, F1) by greedy IoU matching of Cellpose instance masks."""
+    gt_ids = np.unique(gt_mask)
+    gt_ids = gt_ids[gt_ids != 0]
+    pred_ids = np.unique(pred_mask)
+    pred_ids = pred_ids[pred_ids != 0]
+
+    if len(gt_ids) == 0 and len(pred_ids) == 0:
+        return 1.0, 1.0, 1.0
+    if len(gt_ids) == 0:
+        return 0.0, 1.0, 0.0
+    if len(pred_ids) == 0:
+        return 1.0, 0.0, 0.0
+
+    iou_matrix = np.zeros((len(gt_ids), len(pred_ids)), dtype=np.float32)
+    for i, g in enumerate(gt_ids):
+        gt_cell = gt_mask == g
+        for j, p in enumerate(pred_ids):
+            pred_cell = pred_mask == p
+            intersection = int(np.logical_and(gt_cell, pred_cell).sum())
+            if intersection == 0:
+                continue
+            union = int(np.logical_or(gt_cell, pred_cell).sum())
+            iou_matrix[i, j] = intersection / union
+
+    candidate_indices = np.argwhere(iou_matrix >= iou_threshold)
+    matched_gt: set[int] = set()
+    matched_pred: set[int] = set()
+    tp = 0
+
+    if len(candidate_indices) > 0:
+        candidate_ious = iou_matrix[candidate_indices[:, 0], candidate_indices[:, 1]]
+        for idx in np.argsort(-candidate_ious):
+            gi, pi = candidate_indices[idx]
+            if gi not in matched_gt and pi not in matched_pred:
+                matched_gt.add(int(gi))
+                matched_pred.add(int(pi))
+                tp += 1
+
+    fp = len(pred_ids) - tp
+    fn = len(gt_ids) - tp
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return float(precision), float(recall), float(f1)
+
+
+def compute_cellpose_metrics(
+    pairs: list[tuple[str, str]],
+    device: str,
+    model_type: str,
+) -> dict[str, list[float]]:
+    """Run Cellpose on the given pairs and return per-image precision, recall, F1, and cell counts."""
+    from cellpose import models as cellpose_models  # noqa: PLC0415 — lazy optional import
+
+    use_gpu = device == "cuda"
+    cp_model = cellpose_models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
+    _log.info("Running Cellpose (%s) on %d pairs (device=%s).", model_type, len(pairs), device)
+
+    results: dict[str, list[float]] = {
+        "cp_precision": [], "cp_recall": [], "cp_f1": [],
+        "cp_n_pred": [], "cp_n_gt": [],
+    }
+
+    for pred_path, gt_path in pairs:
+        try:
+            pred_img = np.array(Image.open(pred_path).convert("RGB"))
+            gt_img = np.array(Image.open(gt_path).convert("RGB"))
+            pred_masks = cp_model.eval(pred_img, diameter=None, channels=[0, 0])[0]
+            gt_masks = cp_model.eval(gt_img, diameter=None, channels=[0, 0])[0]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Cellpose skipping pair (%s, %s): %s", pred_path, gt_path, exc)
+            continue
+
+        precision, recall, f1 = _compare_instance_masks(pred_masks, gt_masks)
+        results["cp_precision"].append(precision)
+        results["cp_recall"].append(recall)
+        results["cp_f1"].append(f1)
+        results["cp_n_pred"].append(float(int(pred_masks.max())))
+        results["cp_n_gt"].append(float(int(gt_masks.max())))
+
+    return results
+
+
 def format_terminal_output(
     model_name: str,
     dataset_name: str,
@@ -333,6 +443,9 @@ def format_terminal_output(
     gpu_mem: float | None,
     versions: dict[str, str],
     output_path: str | None,
+    cellpose_results: dict[str, list[float]] | None = None,
+    cellpose_model: str | None = None,
+    cellpose_n_sampled: int | None = None,
 ) -> str:
     """Build the formatted evaluation results string; does not print."""
     SEP = "=" * 60
@@ -365,6 +478,8 @@ def format_terminal_output(
     ]
 
     version_libs = ["torch", "torchmetrics", "lpips", "torch-fidelity", "numpy", "Pillow"]
+    if cellpose_results is not None:
+        version_libs.append("cellpose")
     version_rows = [
         f"  {lib:<18}{versions.get(lib, 'unknown')}" for lib in version_libs
     ]
@@ -382,6 +497,28 @@ def format_terminal_output(
         header_sep,
         *metric_rows,
         SEP,
+    ]
+
+    if cellpose_results is not None and cellpose_results.get("cp_f1"):
+        cp_m_std = lambda key: (  # noqa: E731
+            float(np.mean(cellpose_results[key])),
+            float(np.std(cellpose_results[key])),
+        )
+        cp_prec_m, cp_prec_s = cp_m_std("cp_precision")
+        cp_rec_m, cp_rec_s = cp_m_std("cp_recall")
+        cp_f1_m, cp_f1_s = cp_m_std("cp_f1")
+        n_label = f"{cellpose_n_sampled} pairs sampled" if cellpose_n_sampled is not None else "all pairs"
+        lines += [
+            f"  Cellpose ({cellpose_model}) -- {n_label}",
+            f"  {'Metric':<18}{'Mean':<12}Std",
+            header_sep,
+            row("CP Precision",    f"{cp_prec_m:.3f}", f"{cp_prec_s:.3f}"),
+            row("CP Recall",       f"{cp_rec_m:.3f}",  f"{cp_rec_s:.3f}"),
+            row("CP F1",           f"{cp_f1_m:.3f}",   f"{cp_f1_s:.3f}"),
+            SEP,
+        ]
+
+    lines += [
         "  Library versions",
         f"  {COL1_DASH}",
         *version_rows,
@@ -409,6 +546,9 @@ def append_csv_row(
     seed: int,
     gt_checksum: str,
     versions: dict[str, str],
+    cellpose_results: dict[str, list[float]] | None = None,
+    cellpose_model: str | None = None,
+    cellpose_n_sampled: int | None = None,
 ) -> None:
     """Append one result row to the CSV file, writing the header first if needed."""
     columns = [
@@ -425,6 +565,11 @@ def append_csv_row(
         "gt_checksum_md5",
         "torch_version", "torchmetrics_version", "lpips_version",
         "torch_fidelity_version", "numpy_version", "pillow_version",
+        "cellpose_model", "cellpose_n_pairs",
+        "cellpose_precision_mean", "cellpose_precision_std",
+        "cellpose_recall_mean", "cellpose_recall_std",
+        "cellpose_f1_mean", "cellpose_f1_std",
+        "cellpose_version",
     ]
 
     def fmt(val: float | None) -> str:
@@ -471,6 +616,38 @@ def append_csv_row(
         "pillow_version":         versions.get("Pillow", "N/A"),
     }
 
+    if cellpose_results is not None and cellpose_results.get("cp_f1"):
+        def cp_mean_std(key: str) -> tuple[float, float]:
+            vals = cellpose_results[key]
+            return float(np.mean(vals)), float(np.std(vals))
+
+        cp_prec_m, cp_prec_s = cp_mean_std("cp_precision")
+        cp_rec_m, cp_rec_s = cp_mean_std("cp_recall")
+        cp_f1_m, cp_f1_s = cp_mean_std("cp_f1")
+        row_data.update({
+            "cellpose_model":           cellpose_model or "N/A",
+            "cellpose_n_pairs":         str(cellpose_n_sampled) if cellpose_n_sampled is not None else "N/A",
+            "cellpose_precision_mean":  fmt(cp_prec_m),
+            "cellpose_precision_std":   fmt(cp_prec_s),
+            "cellpose_recall_mean":     fmt(cp_rec_m),
+            "cellpose_recall_std":      fmt(cp_rec_s),
+            "cellpose_f1_mean":         fmt(cp_f1_m),
+            "cellpose_f1_std":          fmt(cp_f1_s),
+            "cellpose_version":         versions.get("cellpose", "N/A"),
+        })
+    else:
+        row_data.update({
+            "cellpose_model":           "N/A",
+            "cellpose_n_pairs":         "N/A",
+            "cellpose_precision_mean":  "N/A",
+            "cellpose_precision_std":   "N/A",
+            "cellpose_recall_mean":     "N/A",
+            "cellpose_recall_std":      "N/A",
+            "cellpose_f1_mean":         "N/A",
+            "cellpose_f1_std":          "N/A",
+            "cellpose_version":         "N/A",
+        })
+
     file_exists = os.path.isfile(output_path)
     with open(output_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
@@ -500,7 +677,7 @@ def main() -> None:
 
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    versions = get_library_versions()
+    versions = get_library_versions(cellpose_enabled=args.cellpose)
 
     # Validate pred and gt folders
     for label, folder in [("pred", args.pred), ("gt", args.gt)]:
@@ -534,6 +711,26 @@ def main() -> None:
 
     fid = compute_fid(args.pred, args.gt)
 
+    cellpose_results: dict[str, list[float]] | None = None
+    cellpose_pairs_sampled: list[tuple[str, str]] | None = None
+    if args.cellpose:
+        try:
+            import cellpose  # noqa: F401 — verify importable before proceeding
+        except ImportError:
+            sys.stderr.write(
+                "Missing library: cellpose. Install with: pip install cellpose\n"
+            )
+            sys.exit(1)
+        if args.cellpose_n is not None:
+            n = min(args.cellpose_n, len(pairs))
+            cellpose_pairs_sampled = random.sample(pairs, n)
+        else:
+            cellpose_pairs_sampled = list(pairs)
+        cellpose_results = compute_cellpose_metrics(
+            cellpose_pairs_sampled, device, args.cellpose_model
+        )
+
+    cp_n_sampled = len(cellpose_pairs_sampled) if cellpose_pairs_sampled is not None else None
     output_str = format_terminal_output(
         model_name=args.model_name,
         dataset_name=args.dataset_name,
@@ -547,6 +744,9 @@ def main() -> None:
         gpu_mem=args.gpu_mem,
         versions=versions,
         output_path=args.output,
+        cellpose_results=cellpose_results,
+        cellpose_model=args.cellpose_model if args.cellpose else None,
+        cellpose_n_sampled=cp_n_sampled,
     )
     print(output_str)
 
@@ -566,6 +766,9 @@ def main() -> None:
             seed=args.seed,
             gt_checksum=gt_checksum,
             versions=versions,
+            cellpose_results=cellpose_results,
+            cellpose_model=args.cellpose_model if args.cellpose else None,
+            cellpose_n_sampled=cp_n_sampled,
         )
 
 

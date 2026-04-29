@@ -13,3 +13,4 @@ dependencies:
       - torch-fidelity
       - Pillow
       - numpy
+      - cellpose  # optional: only needed when running with --cellpose
