@@ -130,7 +130,7 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 python -c "import torchmetrics; print('torchmetrics:', torchmetrics.__version__)"
 python -c "import lpips; print('lpips ok')"
 python -c "import torch_fidelity; print('torch-fidelity ok')"
-python -c "import cellpose; print('cellpose:', cellpose.__version__)"
+python -c "import importlib.metadata; print('cellpose:', importlib.metadata.version('cellpose'))"
 
 deactivate
 echo ""
