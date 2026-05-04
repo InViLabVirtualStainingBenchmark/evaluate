@@ -41,7 +41,7 @@ except ImportError:
 
 try:
     import torchmetrics
-    import torchmetrics.image  # replaces deprecated torchmetrics.functional in torchmetrics >= 1.0
+    import torchmetrics.functional
 except ImportError:
     sys.stderr.write("Missing library: torchmetrics. Install with: pip install torchmetrics\n")
     sys.exit(1)
@@ -314,18 +314,18 @@ def compute_per_image_metrics(
         for pred_path, gt_path in pairs:
             pred_t, gt_t = load_image_pair(pred_path, gt_path, device)
 
-            psnr_val = torchmetrics.image.peak_signal_noise_ratio(
+            psnr_val = torchmetrics.functional.peak_signal_noise_ratio(
                 pred_t, gt_t, data_range=1.0
             ).item()
             results["psnr"].append(psnr_val)
 
-            ssim_val = torchmetrics.image.structural_similarity_index_measure(
+            ssim_val = torchmetrics.functional.structural_similarity_index_measure(
                 pred_t, gt_t, data_range=1.0
             ).item()
             results["ssim"].append(ssim_val)
 
             ms_ssim_val = (
-                torchmetrics.image.multiscale_structural_similarity_index_measure(
+                torchmetrics.functional.multiscale_structural_similarity_index_measure(
                     pred_t, gt_t, data_range=1.0
                 )
             ).item()
