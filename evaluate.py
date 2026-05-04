@@ -6,6 +6,10 @@ and a folder of ground truth images. Optionally runs Cellpose segmentation on bo
 to compute downstream cell-detection precision, recall, and F1 (enable with --cellpose).
 Logs library versions and a GT folder checksum for full reproducibility. Appends results
 to a CSV file if --output is provided.
+
+Resolution policy: when predicted and ground-truth image sizes differ, the GT image is
+downsampled to match the predicted resolution (LANCZOS). This keeps evaluation at the
+model's native output resolution and avoids upscaling artifacts.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ except ImportError:
 
 try:
     import torchmetrics
-    import torchmetrics.functional
+    import torchmetrics.image  # replaces deprecated torchmetrics.functional in torchmetrics >= 1.0
 except ImportError:
     sys.stderr.write("Missing library: torchmetrics. Install with: pip install torchmetrics\n")
     sys.exit(1)
@@ -257,7 +261,12 @@ def collect_image_pairs(
 def load_image_pair(
     pred_path: str, gt_path: str, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load a pred/gt pair as float32 tensors of shape (1, 3, H, W) in range [0, 1]."""
+    """Load a pred/gt pair as float32 tensors of shape (1, 3, H, W) in range [0, 1].
+
+    When sizes differ, the GT image is downsampled to match the predicted resolution
+    (LANCZOS). This keeps evaluation at the model's native output resolution and avoids
+    bilinear upscaling artifacts being attributed to the model.
+    """
     def open_image(path: str) -> tuple[Image.Image, float]:
         img = Image.open(path)
         if img.mode in ("I", "I;16"):
@@ -271,11 +280,14 @@ def load_image_pair(
     gt_img, gt_div = open_image(gt_path)
 
     if pred_img.size != gt_img.size:
+        # Downsample GT to pred resolution. Never upscale pred, as that would
+        # introduce blur artifacts that would unfairly penalize the model.
         _log.warning(
-            "Size mismatch: pred '%s' is %s, gt '%s' is %s. Resizing pred to match gt.",
+            "Size mismatch: pred '%s' is %s, gt '%s' is %s. "
+            "Downsampling gt to pred resolution (LANCZOS).",
             pred_path, pred_img.size, gt_path, gt_img.size,
         )
-        pred_img = pred_img.resize(gt_img.size, Image.BILINEAR)
+        gt_img = gt_img.resize(pred_img.size, Image.LANCZOS)
 
     def to_tensor(img: Image.Image, divisor: float) -> torch.Tensor:
         arr = np.array(img).astype(np.float32) / divisor  # (H, W, 3)
@@ -302,18 +314,18 @@ def compute_per_image_metrics(
         for pred_path, gt_path in pairs:
             pred_t, gt_t = load_image_pair(pred_path, gt_path, device)
 
-            psnr_val = torchmetrics.functional.peak_signal_noise_ratio(
+            psnr_val = torchmetrics.image.peak_signal_noise_ratio(
                 pred_t, gt_t, data_range=1.0
             ).item()
             results["psnr"].append(psnr_val)
 
-            ssim_val = torchmetrics.functional.structural_similarity_index_measure(
+            ssim_val = torchmetrics.image.structural_similarity_index_measure(
                 pred_t, gt_t, data_range=1.0
             ).item()
             results["ssim"].append(ssim_val)
 
             ms_ssim_val = (
-                torchmetrics.functional.multiscale_structural_similarity_index_measure(
+                torchmetrics.image.multiscale_structural_similarity_index_measure(
                     pred_t, gt_t, data_range=1.0
                 )
             ).item()
@@ -415,13 +427,16 @@ def compute_cellpose_metrics(
             pred_img = np.array(Image.open(pred_path).convert("RGB"))
             gt_img = np.array(Image.open(gt_path).convert("RGB"))
             if pred_img.shape != gt_img.shape:
+                # Downsample GT to pred resolution, consistent with load_image_pair.
+                # numpy shape is (H, W, C); PIL resize takes (W, H).
                 _log.warning(
-                    "Cellpose size mismatch: pred %s is %s, gt %s is %s. Resizing pred to match gt.",
+                    "Cellpose size mismatch: pred %s is %s, gt %s is %s. "
+                    "Downsampling gt to pred resolution (LANCZOS).",
                     pred_path, pred_img.shape[:2], gt_path, gt_img.shape[:2],
                 )
-                pred_img = np.array(
-                    Image.fromarray(pred_img).resize(
-                        (gt_img.shape[1], gt_img.shape[0]), Image.BILINEAR
+                gt_img = np.array(
+                    Image.fromarray(gt_img).resize(
+                        (pred_img.shape[1], pred_img.shape[0]), Image.LANCZOS
                     )
                 )
             pred_masks = cp_model.eval(pred_img, diameter=None, channels=[0, 0])[0]
