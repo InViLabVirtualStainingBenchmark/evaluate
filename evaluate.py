@@ -414,13 +414,23 @@ def compute_cellpose_metrics(
         try:
             pred_img = np.array(Image.open(pred_path).convert("RGB"))
             gt_img = np.array(Image.open(gt_path).convert("RGB"))
+            if pred_img.shape != gt_img.shape:
+                _log.warning(
+                    "Cellpose size mismatch: pred %s is %s, gt %s is %s. Resizing pred to match gt.",
+                    pred_path, pred_img.shape[:2], gt_path, gt_img.shape[:2],
+                )
+                pred_img = np.array(
+                    Image.fromarray(pred_img).resize(
+                        (gt_img.shape[1], gt_img.shape[0]), Image.BILINEAR
+                    )
+                )
             pred_masks = cp_model.eval(pred_img, diameter=None, channels=[0, 0])[0]
             gt_masks = cp_model.eval(gt_img, diameter=None, channels=[0, 0])[0]
+            precision, recall, f1 = _compare_instance_masks(pred_masks, gt_masks)
         except Exception as exc:  # noqa: BLE001
             _log.warning("Cellpose skipping pair (%s, %s): %s", pred_path, gt_path, exc)
             continue
 
-        precision, recall, f1 = _compare_instance_masks(pred_masks, gt_masks)
         results["cp_precision"].append(precision)
         results["cp_recall"].append(recall)
         results["cp_f1"].append(f1)
