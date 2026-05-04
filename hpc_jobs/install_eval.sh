@@ -57,6 +57,7 @@ python -m pip install \
     lpips \
     torch-fidelity \
     cellpose \
+    matplotlib \
     --no-cache-dir
 
 # =========================
