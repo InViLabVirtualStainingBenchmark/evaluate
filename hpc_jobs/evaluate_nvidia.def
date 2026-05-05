@@ -7,6 +7,8 @@ From: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+    mkdir -p /data/BCI /data/BCI-AB /data/MIST-HER2
+
     pip install --no-cache-dir --upgrade pip
 
     pip install --no-cache-dir \
