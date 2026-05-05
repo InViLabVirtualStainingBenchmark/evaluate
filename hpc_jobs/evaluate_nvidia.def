@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+
+%post
+    apt-get update -y && \
+    apt-get install -y git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir --upgrade pip
+
+    pip install --no-cache-dir \
+        torchmetrics \
+        lpips \
+        torch-fidelity \
+        cellpose \
+        matplotlib
+
+%labels
+    Author benchmark-team
+    Purpose evaluate.py shared evaluation container
+
+%help
+    Shared evaluation container for the virtual staining benchmark.
+    Base: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+    Contains evaluate.py dependencies: torch, torchmetrics, lpips,
+    torch-fidelity, cellpose, matplotlib.
+    LPIPS and Cellpose weights must be pre-downloaded on the login node
+    before submitting any eval job.
+    Usage: apptainer exec --nv evaluate_nvidia.sif python evaluate.py ...
