@@ -1,4 +1,4 @@
-# Virtual Staining Benchmark — Evaluation Script
+# Virtual Staining Benchmark - Evaluation Script
 
 A single, model-agnostic script that evaluates any image-to-image translation model by
 comparing its output images against ground truth. Designed to produce a reproducible
@@ -8,7 +8,7 @@ comparison table across all models, datasets, and runs.
 
 ## Why this exists
 
-Every paper reports metrics differently — different datasets, different library versions,
+Every paper reports metrics differently: different datasets, different library versions,
 sometimes different definitions of the same metric. This script solves that by running
 every model through the same evaluation code, the same library versions, and logging
 everything needed to reproduce a result: a GT folder checksum, a UTC timestamp, all
@@ -25,7 +25,7 @@ conda env create -f environment.yml
 conda activate vs-benchmark
 ```
 
-Or install with pip (install torch separately first — see comment in requirements.txt):
+Or install with pip (install torch separately first : see comment in requirements.txt):
 
 ```bash
 pip install -r requirements.txt
@@ -54,10 +54,10 @@ Results are printed to the terminal and appended as one row to the CSV.
 
 | Argument           | Required | Default    | Description                                                           |
 |--------------------|----------|------------|-----------------------------------------------------------------------|
-| `--pred`           | yes      | —          | Folder of predicted / generated images                                |
-| `--gt`             | yes      | —          | Folder of ground truth images                                         |
-| `--model_name`     | yes      | —          | Label for this model, used in output                                  |
-| `--dataset_name`   | yes      | —          | Label for the dataset used                                            |
+| `--pred`           | yes      | :          | Folder of predicted / generated images                                |
+| `--gt`             | yes      | :          | Folder of ground truth images                                         |
+| `--model_name`     | yes      | :          | Label for this model, used in output                                  |
+| `--dataset_name`   | yes      | :          | Label for the dataset used                                            |
 | `--output`         | no       | None       | CSV file to append results to (created if missing)                    |
 | `--match_by`       | no       | `sort`     | How to pair pred and gt images: `sort` or `stem`                      |
 | `--pred_suffix`    | no       | None       | Only use pred images whose filename ends with this suffix             |
@@ -67,7 +67,7 @@ Results are printed to the terminal and appended as one row to the CSV.
 | `--split_name`     | no       | `test`     | Dataset split name, e.g. `test` or `val`                              |
 | `--seed`           | no       | `42`       | Random seed for reproducibility                                       |
 | `--cellpose`       | no       | off        | Enable Cellpose cell segmentation evaluation (see below)              |
-| `--cellpose_model` | no       | `cyto2`    | Cellpose model: `cyto2` (H&E), `nuclei` (DAPI), `cyto`                |
+| `--cellpose_model` | no       | `cpsam`    | Cellpose model: `cpsam`, `cyto2` (H&E), `nuclei`                      |
 | `--cellpose_n`     | no       | None (all) | Number of pairs to run Cellpose on; subset is seeded and reproducible |
 
 ---
@@ -120,18 +120,18 @@ Computed for every matched pair. Mean and standard deviation are reported.
 | Metric          | Better | Notes                                                                                                                                     |
 |-----------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------|
 | PSNR            | higher | Peak signal-to-noise ratio in dB. Sensitive to pixel-level accuracy.                                                                      |
-| SSIM            | higher | Structural similarity, range 0–1.                                                                                                         |
-| MS-SSIM         | higher | Multi-scale SSIM, range 0–1.                                                                                                              |
+| SSIM            | higher | Structural similarity, range 0-1.                                                                                                         |
+| MS-SSIM         | higher | Multi-scale SSIM, range 0-1.                                                                                                              |
 | LPIPS (AlexNet) | lower  | Perceptual similarity using AlexNet. Best standalone perceptual metric.                                                                   |
 | LPIPS (VGG)     | lower  | Perceptual similarity using VGG. Common in GAN training pipelines. Both are reported because the field has not converged on one standard. |
 | MAE             | lower  | Mean absolute pixel error.                                                                                                                |
 
 ### Distribution-level metric
-Computed once across the full pred and gt folders.
+Computed once across the exact matched image pairs used for the per-image metrics.
 
-| Metric | Better | Notes                                                                                                                                                                                                                                           |
-|--------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| FID    | lower  | Frechet Inception Distance. Measures how similar the overall distribution of generated images is to real images. Most meaningful for unpaired models. Requires at least 2048 images for reliable results — a warning is shown for smaller sets. |
+| Metric | Better | Notes                                                                                                                                                                                                                                          |
+|--------|--------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| FID    | lower  | Frechet Inception Distance. Measures how similar the overall distribution of generated images is to real images. Most meaningful for unpaired models. Requires at least 2048 images for reliable results. A warning is shown for smaller sets. |
 
 ### Pass-through metrics
 Not computed by the script. Provide them from your job script if you have them.
@@ -153,7 +153,7 @@ as a true positive only if it overlaps its best-matching ground truth cell by at
 This is a **downstream-task metric**: instead of asking "do the pixel values match?", it
 asks "does a cell segmentation algorithm behave the same way on the generated image as on
 the real one?" A model can score well on PSNR/SSIM but still fool a segmenter differently
-than the ground truth stain would — or vice versa.
+than the ground truth stain would : or vice versa.
 
 | Metric       | Better | Notes                                                   |
 |--------------|--------|---------------------------------------------------------|
@@ -161,15 +161,16 @@ than the ground truth stain would — or vice versa.
 | CP Recall    | higher | Fraction of GT cells that are matched by a pred cell    |
 | CP F1        | higher | Harmonic mean of precision and recall                   |
 
-**Choosing a model** — pass the model name that matches your staining type:
+**Choosing a model**: pass the model name that matches your staining type:
 
 | Staining                | `--cellpose_model` |
 |-------------------------|--------------------|
-| H&E (cytoplasm)         | `cyto2` (default)  |
+| General histology       | `cpsam` (default)  |
+| H&E (cytoplasm)         | `cyto2`            |
 | DAPI / Hoechst (nuclei) | `nuclei`           |
 | Generic cytoplasm       | `cyto`             |
 
-**Sampling** — on large datasets Cellpose can be slow. Use `--cellpose_n N` to run on a
+**Sampling**: on large datasets Cellpose can be slow. Use `--cellpose_n N` to run on a
 random subset of N pairs instead of all pairs. The subset is drawn using Python's `random`
 module after the global `--seed` has been set, so the same seed always produces the same
 subset. The exact count is written to the CSV under `cellpose_n_pairs`.
@@ -185,19 +186,20 @@ python evaluate.py \
   --cellpose_n 200
 ```
 
-**Cluster / HPC usage** — compute nodes typically have no internet access. Cellpose
+**Cluster / HPC usage**: compute nodes typically have no internet access. Cellpose
 downloads model weights from HuggingFace on first use and caches them in
 `~/.cellpose/models/`. Pre-download on the login node before submitting any eval job:
 
 ```bash
 python -c "
 from cellpose import models
-models.CellposeModel(pretrained_model='cyto2')   # default
+models.CellposeModel(pretrained_model='cpsam')   # default
+# models.CellposeModel(pretrained_model='cyto2')  # add if using --cellpose_model cyto2
 # models.CellposeModel(pretrained_model='nuclei') # add if using --cellpose_model nuclei
 "
 ```
 
-This is already handled by `install_eval.sh` (pre-downloads `cyto2`). If you switch to
+This is already handled by `install_eval.sh` (pre-downloads `cpsam`). If you switch to
 a different model type, add the corresponding line there and re-run the installation job.
 
 ---
@@ -238,13 +240,13 @@ Without `--cellpose`:
 ============================================================
 ```
 
-With `--cellpose --cellpose_model cyto2 --cellpose_n 200`:
+With `--cellpose --cellpose_model cpsam --cellpose_n 200`:
 
 ```
 ============================================================
   ...same header and metrics table...
 ============================================================
-  Cellpose (cyto2) -- 200 pairs sampled
+  Cellpose (cpsam) -- 200 pairs sampled
   Metric            Mean        Std
   --------------    --------    --------
   CP Precision      0.823       0.041
@@ -310,8 +312,8 @@ Every run logs:
 - RGBA and grayscale images are converted to RGB automatically
 - **16-bit images** (microscopy TIFFs): detected automatically and normalised by 65535
   instead of 255. A warning is logged when this path is taken.
-- If a predicted image has a different size than its ground truth pair, it is resized
-  to match using bilinear interpolation and a warning is logged.
+- If a predicted image has a different size than its ground truth pair, evaluation fails.
+  All benchmark inference jobs should write 1024x1024 outputs so metrics are comparable.
 
 ---
 
@@ -332,13 +334,13 @@ python plot_training_curves.py \
 
 Outputs written to `--out-dir`:
 
-- `<name>_training_curves.png` — loss, LR, and wall-clock timing panels
-- `<name>_training_summary.csv` — final-epoch averages per run; append these
+- `<name>_training_curves.png` : loss, LR, and wall-clock timing panels
+- `<name>_training_summary.csv` : final-epoch averages per run; append these
   columns to the main benchmark table for reporting
 
 Works with any model whose training script inherits the junyanz logger (CUT,
 pix2pix, CycleGAN, PSPStain, ASP, and similar GAN repos). Restoration models
-(SwinIR, NAFNet, etc.) may use a different log format — verify before use.
+(SwinIR, NAFNet, etc.) may use a different log format : verify before use.
 
 ### Options
 
@@ -354,7 +356,7 @@ pix2pix, CycleGAN, PSPStain, ASP, and similar GAN repos). Restoration models
 
 ### On the cluster (VSC)
 
-Use the wrapper `run_plot_training.sh` on the **login node** — it loads the correct
+Use the wrapper `run_plot_training.sh` on the **login node** : it loads the correct
 modules and activates the evaluation venv automatically:
 
 ```bash

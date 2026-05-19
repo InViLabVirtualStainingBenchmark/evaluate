@@ -7,9 +7,8 @@ to compute downstream cell-detection precision, recall, and F1 (enable with --ce
 Logs library versions and a GT folder checksum for full reproducibility. Appends results
 to a CSV file if --output is provided.
 
-Resolution policy: when predicted and ground-truth image sizes differ, the GT image is
-downsampled to match the predicted resolution (LANCZOS). This keeps evaluation at the
-model's native output resolution and avoids upscaling artifacts.
+Resolution policy: predicted and ground-truth image sizes must match exactly. Resizing
+changes the target being measured and can make cross-model comparisons unfair.
 """
 
 from __future__ import annotations
@@ -24,7 +23,9 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import sys
+import tempfile
 
 # third-party
 try:
@@ -142,11 +143,11 @@ def parse_args() -> argparse.Namespace:
         help="Enable Cellpose cell segmentation evaluation (opt-in; requires cellpose installed).",
     )
     parser.add_argument(
-        "--cellpose_model", type=str, default="cyto2",
+        "--cellpose_model", type=str, default="cpsam",
         help=(
             "Cellpose model type to use when --cellpose is set. "
-            "Common options: 'cyto2' (H&E / cytoplasm), 'nuclei' (DAPI / nuclear), 'cyto'. "
-            "Default: cyto2."
+            "Common options: 'cpsam', 'cyto2' (H&E / cytoplasm), 'nuclei' (DAPI / nuclear). "
+            "Default: cpsam."
         ),
     )
     parser.add_argument(
@@ -261,12 +262,7 @@ def collect_image_pairs(
 def load_image_pair(
     pred_path: str, gt_path: str, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load a pred/gt pair as float32 tensors of shape (1, 3, H, W) in range [0, 1].
-
-    When sizes differ, the GT image is downsampled to match the predicted resolution
-    (LANCZOS). This keeps evaluation at the model's native output resolution and avoids
-    bilinear upscaling artifacts being attributed to the model.
-    """
+    """Load a pred/gt pair as float32 tensors of shape (1, 3, H, W) in range [0, 1]."""
     def open_image(path: str) -> tuple[Image.Image, float]:
         img = Image.open(path)
         if img.mode in ("I", "I;16"):
@@ -280,14 +276,12 @@ def load_image_pair(
     gt_img, gt_div = open_image(gt_path)
 
     if pred_img.size != gt_img.size:
-        # Downsample GT to pred resolution. Never upscale pred, as that would
-        # introduce blur artifacts that would unfairly penalize the model.
-        _log.warning(
-            "Size mismatch: pred '%s' is %s, gt '%s' is %s. "
-            "Downsampling gt to pred resolution (LANCZOS).",
-            pred_path, pred_img.size, gt_path, gt_img.size,
+        raise ValueError(
+            "Image size mismatch: "
+            f"pred '{pred_path}' is {pred_img.size}, "
+            f"gt '{gt_path}' is {gt_img.size}. "
+            "Benchmark evaluation requires equal image sizes."
         )
-        gt_img = gt_img.resize(pred_img.size, Image.LANCZOS)
 
     def to_tensor(img: Image.Image, divisor: float) -> torch.Tensor:
         arr = np.array(img).astype(np.float32) / divisor  # (H, W, 3)
@@ -344,16 +338,36 @@ def compute_per_image_metrics(
     return results
 
 
-def compute_fid(pred_folder: str, gt_folder: str) -> float:
-    """Compute Frechet Inception Distance between predicted and ground truth image folders."""
-    metrics = fidelity_calculate_metrics(
-        input1=pred_folder,
-        input2=gt_folder,
-        cuda=torch.cuda.is_available(),
-        fid=True,
-        verbose=False,
-    )
-    return float(metrics["frechet_inception_distance"])
+def _link_or_copy(src: str, dst: str) -> None:
+    """Create a symlink for FID input when possible, otherwise copy the image."""
+    try:
+        os.symlink(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def compute_fid(pairs: list[tuple[str, str]]) -> float:
+    """Compute Frechet Inception Distance on exactly the matched evaluation pairs."""
+    with tempfile.TemporaryDirectory(prefix="vs_benchmark_fid_") as tmp_dir:
+        pred_dir = pathlib.Path(tmp_dir) / "pred"
+        gt_dir = pathlib.Path(tmp_dir) / "gt"
+        pred_dir.mkdir()
+        gt_dir.mkdir()
+
+        for idx, (pred_path, gt_path) in enumerate(pairs):
+            pred_suffix = pathlib.Path(pred_path).suffix.lower()
+            gt_suffix = pathlib.Path(gt_path).suffix.lower()
+            _link_or_copy(pred_path, str(pred_dir / f"{idx:08d}{pred_suffix}"))
+            _link_or_copy(gt_path, str(gt_dir / f"{idx:08d}{gt_suffix}"))
+
+        metrics = fidelity_calculate_metrics(
+            input1=str(pred_dir),
+            input2=str(gt_dir),
+            cuda=torch.cuda.is_available(),
+            fid=True,
+            verbose=False,
+        )
+        return float(metrics["frechet_inception_distance"])
 
 
 def _compare_instance_masks(
@@ -411,7 +425,7 @@ def compute_cellpose_metrics(
     model_type: str,
 ) -> dict[str, list[float]]:
     """Run Cellpose on the given pairs and return per-image precision, recall, F1, and cell counts."""
-    from cellpose import models as cellpose_models  # noqa: PLC0415 — lazy optional import
+    from cellpose import models as cellpose_models  # noqa: PLC0415 - lazy optional import
 
     use_gpu = device == "cuda"
     cp_model = cellpose_models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
@@ -427,17 +441,11 @@ def compute_cellpose_metrics(
             pred_img = np.array(Image.open(pred_path).convert("RGB"))
             gt_img = np.array(Image.open(gt_path).convert("RGB"))
             if pred_img.shape != gt_img.shape:
-                # Downsample GT to pred resolution, consistent with load_image_pair.
-                # numpy shape is (H, W, C); PIL resize takes (W, H).
-                _log.warning(
-                    "Cellpose size mismatch: pred %s is %s, gt %s is %s. "
-                    "Downsampling gt to pred resolution (LANCZOS).",
-                    pred_path, pred_img.shape[:2], gt_path, gt_img.shape[:2],
-                )
-                gt_img = np.array(
-                    Image.fromarray(gt_img).resize(
-                        (pred_img.shape[1], pred_img.shape[0]), Image.LANCZOS
-                    )
+                raise ValueError(
+                    "Cellpose image size mismatch: "
+                    f"pred '{pred_path}' is {pred_img.shape[:2]}, "
+                    f"gt '{gt_path}' is {gt_img.shape[:2]}. "
+                    "Benchmark evaluation requires equal image sizes."
                 )
             pred_masks = cp_model.eval(pred_img, diameter=None, channels=[0, 0])[0]
             gt_masks = cp_model.eval(gt_img, diameter=None, channels=[0, 0])[0]
@@ -734,13 +742,13 @@ def main() -> None:
 
     per_image = compute_per_image_metrics(pairs, device)
 
-    fid = compute_fid(args.pred, args.gt)
+    fid = compute_fid(pairs)
 
     cellpose_results: dict[str, list[float]] | None = None
     cellpose_pairs_sampled: list[tuple[str, str]] | None = None
     if args.cellpose:
         try:
-            import cellpose  # noqa: F401 — verify importable before proceeding
+            import cellpose  # noqa: F401 - verify importable before proceeding
         except ImportError:
             sys.stderr.write(
                 "Missing library: cellpose. Install with: pip install cellpose\n"
